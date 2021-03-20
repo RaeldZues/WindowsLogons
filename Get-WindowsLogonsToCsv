@@ -1,0 +1,49 @@
+# This function is used with Invoke-Parallel to parse large numbers of evtx files for eventID 4624s based on usernames, 
+# extracts them to CSV files. 
+
+function Get-WindowsLogonsToCsv(
+    [ValidateScript({ Test-Path -literal $_ })]
+    [string]$eventLogPath,
+
+    [Parameter(Mandatory)]
+    [string[]]$users,
+
+    [ValidateScript({ Test-Path -IsValid -literal $_ })]
+    [string]$outputPath = ($eventLogPath -replace '[^.]+$', 'csv')
+) {
+    $query = '*[System/EventID=4624 and EventData[' +
+        ($users -replace '^.+', 'Data[@Name="TargetUserName"]="$&"' -join ' or ') + ']]'
+    $reader = [Diagnostics.Eventing.Reader.EventLogReader]::new(
+        [Diagnostics.Eventing.Reader.EventLogQuery]::new($eventLogPath,
+            [Diagnostics.Eventing.Reader.PathType]::FilePath, $query)
+    )
+    $writer = [IO.StreamWriter]::new($outputPath, $false, [Text.Encoding]::UTF8, 16MB)
+    $writer.WriteLine('MachineName, RecordId, TimeCreated, Id,' +
+        'SubjectUserSid, SubjectUserName, SubjectDomainName, SubjectLogonId, ' +
+        'TargetUserSid, TargetUserName, TargetDomainName, TargetLogonId, ' +
+        'LogonType, LogonProcessName, AuthenticationPackageName, WorkstationName, ' +
+        'LogonGuid, TransmittedServices, LmPackageName, KeyLength, ' +
+        'ProcessId, ProcessName, IP, IpPort')
+    while ($e = $reader.ReadEvent()) {
+        $p = $e.properties
+        $writer.WriteLine('"' +
+            [string]::Join("`0",
+                $($e.MachineName, $e.RecordId, $e.TimeCreated, $e.Id; $p[0..19].value)
+            ).replace('"', '""').replace("`0", '","') + '"'
+        )
+    }
+    $writer.close()
+    [GC]::Collect()
+}
+
+
+
+
+$outputDir = #SetThis
+$users = #SetThis
+$files = Get-Content #SetThisToPathofFileContainingFilepathsOfTheEVTXFiles
+ $files | Invoke-Parallel -ImportModules -ImportVariables -ScriptBlock {
+        $outputCsv = Join-Path $outputDir ((Get-Item -literal $_).BaseName + '.csv')
+        CollectLogonsInCsv $_ @($users) $outputCsv
+    }
+
